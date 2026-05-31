@@ -18,8 +18,12 @@ static: uglify | libs
 	crystal build src/mango.cr --release --progress --static --error-trace
 
 libs:
-	shards install --production
-	sed -i 's#https://raw.githubusercontent.com/nothings/stb/master/#https://raw.githubusercontent.com/nothings/stb/5736b15f7ea0ffb08dd38af21067c314d6a3aae9/#g' lib/image_size/ext/stbi/Makefile
+	shards install --production --skip-postinstall
+	sed -i.bak 's#https://raw.githubusercontent.com/nothings/stb/master/#https://raw.githubusercontent.com/nothings/stb/5736b15f7ea0ffb08dd38af21067c314d6a3aae9/#g' lib/image_size/ext/stbi/Makefile
+	rm -f lib/image_size/ext/stbi/Makefile.bak
+	make -C lib/duktape/ext clean libduktape
+	cd lib/myhtml/src/ext && make package
+	make -C lib/image_size
 
 run:
 	crystal run src/mango.cr --error-trace
