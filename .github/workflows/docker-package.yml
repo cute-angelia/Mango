@@ -1,0 +1,97 @@
+name: Publish Docker Package
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/cute-angelia/mango
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Notify Feishu
+        if: always()
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          TAG_NAME: ${{ github.ref_name }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$FEISHU_WEBHOOK_URL" ]; then
+            echo "FEISHU_WEBHOOK_URL is not set, skip notification."
+            exit 0
+          fi
+
+          if [ "$JOB_STATUS" = "success" ]; then
+            TITLE="Mango Docker package published"
+          else
+            TITLE="Mango Docker package publish failed"
+          fi
+
+          jq -n \
+            --arg title "$TITLE" \
+            --arg tag "$TAG_NAME" \
+            --arg image "$IMAGE_TAGS" \
+            --arg status "$JOB_STATUS" \
+            --arg url "$RUN_URL" \
+            '{
+              msg_type: "post",
+              content: {
+                post: {
+                  zh_cn: {
+                    title: $title,
+                    content: [[
+                      {tag: "text", text: ("Tag: " + $tag + "\n")},
+                      {tag: "text", text: ("Status: " + $status + "\n")},
+                      {tag: "text", text: ("Image: " + $image + "\n")},
+                      {tag: "a", text: "Open workflow run", href: $url}
+                    ]]
+                  }
+                }
+              }
+            }' \
+          | curl -fsS -X POST "$FEISHU_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              --data-binary @-
