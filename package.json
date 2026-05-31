@@ -20,8 +20,7 @@
 		"uglify": "gulp"
 	},
 	"resolutions": {
-		"browserslist": "4.16.6",
-		"node-releases": "1.1.77"
+		"node-releases": "2.0.44"
 	},
 	"dependencies": {
 		"@fortawesome/fontawesome-free": "5.14.0",
