@@ -230,7 +230,8 @@ class Library
         unless existence
           examine_context["deleted_title_ids"].concat [title_id] +
                                                       title.deep_titles.map &.id
-          examine_context["deleted_entry_ids"].concat title.deep_entries.map &.id
+          examine_context["deleted_entry_ids"].concat \
+            title.deep_entries.map &.id
         end
         existence
       end
