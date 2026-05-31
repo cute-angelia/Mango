@@ -15,11 +15,13 @@ jobs:
       image: crystallang/crystal:1.0.0-alpine
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Install dependencies
       run: apk add --no-cache yarn yaml-static sqlite-static libarchive-dev libarchive-static acl-static expat-static zstd-static lz4-static bzip2-static libjpeg-turbo-dev libpng-dev tiff-dev
     - name: Build
       run: make static || make static
+    - name: Install development shards
+      run: shards install
     - name: Linter
       run: make check
     - name: Run tests
