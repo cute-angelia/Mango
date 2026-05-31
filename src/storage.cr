@@ -15,6 +15,8 @@ def verify_password(hash, pw)
 end
 
 class Storage
+  QUEUED_ID_FLUSH_THRESHOLD = 100
+
   @@insert_entry_ids = [] of IDTuple
   @@insert_title_ids = [] of IDTuple
 
@@ -88,6 +90,15 @@ class Storage
       queued_path == path
     end
     row.try &.[:id]
+  end
+
+  private def queued_id_exists?(queue, tp)
+    path = Path.new(tp[:path]).relative_to(Config.current.library_path).to_s
+    queue.any? do |queued|
+      queued_path = Path.new(queued[:path])
+        .relative_to(Config.current.library_path).to_s
+      queued_path == path || queued[:id] == tp[:id]
+    end
   end
 
   def username_exists(username)
@@ -327,14 +338,27 @@ class Storage
   end
 
   def insert_entry_id(tp)
+    return if queued_id_exists? @@insert_entry_ids, tp
     @@insert_entry_ids << tp
+    flush_insert_id_queue if queued_id_count >= QUEUED_ID_FLUSH_THRESHOLD
   end
 
   def insert_title_id(tp)
+    return if queued_id_exists? @@insert_title_ids, tp
     @@insert_title_ids << tp
+    flush_insert_id_queue if queued_id_count >= QUEUED_ID_FLUSH_THRESHOLD
+  end
+
+  private def queued_id_count
+    @@insert_entry_ids.size + @@insert_title_ids.size
+  end
+
+  private def flush_insert_id_queue
+    bulk_insert_ids
   end
 
   def bulk_insert_ids
+    return if queued_id_count == 0
     MainFiber.run do
       get_db do |db|
         db.transaction do |tran|
@@ -604,6 +628,183 @@ class Storage
 
   def delete_missing_title(id = nil)
     delete_missing "titles", id
+  end
+
+  private def exec_and_count(conn, sql)
+    conn.exec sql
+    conn.query_one "select changes()", as: Int64
+  end
+
+  def dedupe_library_data
+    total = 0_i64
+    MainFiber.run do
+      get_db do |db|
+        db.exec "PRAGMA foreign_keys = 0"
+        db.transaction do |tran|
+          conn = tran.connection
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM tags
+            WHERE rowid NOT IN (
+              SELECT MIN(rowid)
+              FROM tags
+              GROUP BY id, tag
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM thumbnails
+            WHERE rowid NOT IN (
+              SELECT MIN(rowid)
+              FROM thumbnails
+              GROUP BY id
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            INSERT OR IGNORE INTO tags (id, tag)
+            SELECT kept.id, tags.tag
+            FROM titles dup
+            JOIN titles kept ON kept.rowid = (
+              SELECT rowid
+              FROM titles candidate
+              WHERE candidate.path = dup.path
+              ORDER BY candidate.unavailable ASC, candidate.rowid ASC
+              LIMIT 1
+            )
+            JOIN tags ON tags.id = dup.id
+            WHERE dup.rowid != kept.rowid
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM tags
+            WHERE id IN (
+              SELECT dup.id
+              FROM titles dup
+              JOIN titles kept ON kept.rowid = (
+                SELECT rowid
+                FROM titles candidate
+                WHERE candidate.path = dup.path
+                ORDER BY candidate.unavailable ASC, candidate.rowid ASC
+                LIMIT 1
+              )
+              WHERE dup.rowid != kept.rowid
+                AND dup.id != kept.id
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM titles
+            WHERE rowid != (
+              SELECT rowid
+              FROM titles kept
+              WHERE kept.id = titles.id
+              ORDER BY kept.unavailable ASC, kept.rowid ASC
+              LIMIT 1
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM titles
+            WHERE rowid != (
+              SELECT rowid
+              FROM titles kept
+              WHERE kept.path = titles.path
+              ORDER BY kept.unavailable ASC, kept.rowid ASC
+              LIMIT 1
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            INSERT OR IGNORE INTO thumbnails (id, data, filename, mime, size)
+            SELECT kept.id, thumbnails.data, thumbnails.filename,
+              thumbnails.mime, thumbnails.size
+            FROM ids dup
+            JOIN ids kept ON kept.rowid = (
+              SELECT rowid
+              FROM ids candidate
+              WHERE candidate.path = dup.path
+              ORDER BY candidate.unavailable ASC, candidate.rowid ASC
+              LIMIT 1
+            )
+            JOIN thumbnails ON thumbnails.id = dup.id
+            WHERE dup.rowid != kept.rowid
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM thumbnails
+            WHERE id IN (
+              SELECT dup.id
+              FROM ids dup
+              JOIN ids kept ON kept.rowid = (
+                SELECT rowid
+                FROM ids candidate
+                WHERE candidate.path = dup.path
+                ORDER BY candidate.unavailable ASC, candidate.rowid ASC
+                LIMIT 1
+              )
+              WHERE dup.rowid != kept.rowid
+                AND dup.id != kept.id
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM ids
+            WHERE rowid != (
+              SELECT rowid
+              FROM ids kept
+              WHERE kept.id = ids.id
+              ORDER BY kept.unavailable ASC, kept.rowid ASC
+              LIMIT 1
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM ids
+            WHERE rowid != (
+              SELECT rowid
+              FROM ids kept
+              WHERE kept.path = ids.path
+              ORDER BY kept.unavailable ASC, kept.rowid ASC
+              LIMIT 1
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM tags
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM titles
+              WHERE titles.id = tags.id
+            )
+            SQL
+
+          total += exec_and_count conn, <<-SQL
+            DELETE FROM thumbnails
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM ids
+              WHERE ids.id = thumbnails.id
+            )
+            SQL
+
+          conn.exec "CREATE UNIQUE INDEX IF NOT EXISTS titles_id_idx " \
+                    "ON titles (id)"
+          conn.exec "CREATE UNIQUE INDEX IF NOT EXISTS titles_path_idx " \
+                    "ON titles (path)"
+          conn.exec "CREATE UNIQUE INDEX IF NOT EXISTS id_idx ON ids (id)"
+          conn.exec "CREATE UNIQUE INDEX IF NOT EXISTS path_idx ON ids (path)"
+          conn.exec "CREATE UNIQUE INDEX IF NOT EXISTS tn_index " \
+                    "ON thumbnails (id)"
+          conn.exec "CREATE INDEX IF NOT EXISTS tags_id_idx ON tags (id)"
+          conn.exec "CREATE INDEX IF NOT EXISTS tags_tag_idx ON tags (tag)"
+          conn.exec "REINDEX"
+        end
+      ensure
+        db.exec "PRAGMA foreign_keys = 1" unless db.nil?
+      end
+    end
+    total
   end
 
   def save_md_token(username : String, token : String, expire : Time)

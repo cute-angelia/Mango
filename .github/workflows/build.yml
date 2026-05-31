@@ -21,7 +21,9 @@ jobs:
     - name: Build
       run: make static || make static
     - name: Install development shards
-      run: shards install
+      run: |
+        shards install
+        shards build ameba
     - name: Linter
       run: make check
     - name: Run tests

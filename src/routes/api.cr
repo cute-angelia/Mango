@@ -482,16 +482,39 @@ struct APIRouter
     Koa.describe "Triggers a library scan"
     Koa.tags ["admin", "library"]
     Koa.response 200, schema: {
+      "deduped"      => Int64,
       "milliseconds" => Float64,
+      "scanning"     => Bool,
+      "started"      => Bool,
       "titles"       => Int32,
     }
     post "/api/admin/scan" do |env|
-      start = Time.utc
-      Library.default.scan
-      ms = (Time.utc - start).total_milliseconds
+      library = Library.default
+      started = library.start_scan
       send_json env, {
-        "milliseconds" => ms,
-        "titles"       => Library.default.titles.size,
+        "deduped"      => library.last_scan_deduped,
+        "milliseconds" => library.last_scan_ms,
+        "scanning"     => library.scanning,
+        "started"      => started,
+        "titles"       => library.last_scan_titles,
+      }.to_json
+    end
+
+    Koa.describe "Returns the current library scan status"
+    Koa.tags ["admin", "library"]
+    Koa.response 200, schema: {
+      "deduped"      => Int64,
+      "milliseconds" => Float64,
+      "scanning"     => Bool,
+      "titles"       => Int32,
+    }
+    get "/api/admin/scan_status" do |env|
+      library = Library.default
+      send_json env, {
+        "deduped"      => library.last_scan_deduped,
+        "milliseconds" => library.last_scan_ms,
+        "scanning"     => library.scanning,
+        "titles"       => library.last_scan_titles,
       }.to_json
     end
 

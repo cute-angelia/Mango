@@ -13,7 +13,7 @@
       <span :style="`${scanning ? 'color:grey' : ''}`">Scan Library Files</span>
       <div class="uk-align-right">
         <div uk-spinner x-show="scanning"></div>
-        <span x-show="!scanning && scanMs > 0" x-text="`Scan ${scanTitles} titles in ${scanMs}ms`"></span>
+        <span x-show="!scanning && scanMs > 0" x-text="`Scan ${scanTitles} titles in ${scanMs}ms, deduped ${scanDeduped} rows`"></span>
       </div>
     </a>
   </li>

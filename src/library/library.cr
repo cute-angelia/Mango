@@ -32,6 +32,14 @@ class Library
 
   @[YAML::Field(ignore: true)]
   getter thumbnail_ctx = ThumbnailContext.new
+  @[YAML::Field(ignore: true)]
+  getter scanning = false
+  @[YAML::Field(ignore: true)]
+  getter last_scan_ms = 0.0
+  @[YAML::Field(ignore: true)]
+  getter last_scan_titles = 0
+  @[YAML::Field(ignore: true)]
+  getter last_scan_deduped = 0_i64
 
   use_default
 
@@ -179,64 +187,90 @@ class Library
     @title_hash[tid]
   end
 
-  def scan
-    start = Time.local
-    unless Dir.exists? @dir
-      Logger.info "The library directory #{@dir} does not exist. " \
-                  "Attempting to create it"
-      Dir.mkdir_p @dir
-    end
-
-    storage = Storage.new auto_close: false
-
-    examine_context : ExamineContext = {
-      cached_contents_signature: {} of String => String,
-      deleted_title_ids:         [] of String,
-      deleted_entry_ids:         [] of String,
-    }
-
-    library_paths = (Dir.entries @dir)
-      .select { |fn| !fn.starts_with? "." }
-      .map { |fn| File.join @dir, fn }
-    @title_ids.select! do |title_id|
-      title = @title_hash[title_id]
-      next false unless library_paths.includes? title.dir
-      existence = title.examine examine_context
-      unless existence
-        examine_context["deleted_title_ids"].concat [title_id] +
-                                                    title.deep_titles.map &.id
-        examine_context["deleted_entry_ids"].concat title.deep_entries.map &.id
-      end
-      existence
-    end
-    remained_title_dirs = @title_ids.map { |id| title_hash[id].dir }
-    examine_context["deleted_title_ids"].each do |title_id|
-      @title_hash.delete title_id
-    end
-
-    cache = examine_context["cached_contents_signature"]
-    library_paths
-      .select { |path| !(remained_title_dirs.includes? path) }
-      .select { |path| File.directory? path }
-      .map { |path| Title.new path, "", cache }
-      .select { |title| !(title.entries.empty? && title.titles.empty?) }
-      .sort! { |a, b| a.sort_title <=> b.sort_title }
-      .each do |title|
-        @title_hash[title.id] = title
-        @title_ids << title.id
-      end
-
-    storage.bulk_insert_ids
-    storage.close
-
-    ms = (Time.local - start).total_milliseconds
-    Logger.info "Scanned #{@title_ids.size} titles in #{ms}ms"
-
-    Storage.default.mark_unavailable examine_context["deleted_entry_ids"],
-      examine_context["deleted_title_ids"]
-
+  def start_scan
+    return false if @scanning
+    @scanning = true
     spawn do
-      save_instance
+      begin
+        scan force: true
+      rescue e
+        Logger.error e
+        @scanning = false
+      end
+    end
+    true
+  end
+
+  def scan(*, force = false)
+    return false if @scanning && !force
+    @scanning = true
+    start = Time.local
+    begin
+      unless Dir.exists? @dir
+        Logger.info "The library directory #{@dir} does not exist. " \
+                    "Attempting to create it"
+        Dir.mkdir_p @dir
+      end
+
+      storage = Storage.new auto_close: false
+
+      examine_context : ExamineContext = {
+        cached_contents_signature: {} of String => String,
+        deleted_title_ids:         [] of String,
+        deleted_entry_ids:         [] of String,
+      }
+
+      library_paths = (Dir.entries @dir)
+        .select { |fn| !fn.starts_with? "." }
+        .map { |fn| File.join @dir, fn }
+      @title_ids.select! do |title_id|
+        title = @title_hash[title_id]
+        next false unless library_paths.includes? title.dir
+        existence = title.examine examine_context
+        unless existence
+          examine_context["deleted_title_ids"].concat [title_id] +
+                                                      title.deep_titles.map &.id
+          examine_context["deleted_entry_ids"].concat title.deep_entries.map &.id
+        end
+        existence
+      end
+      remained_title_dirs = @title_ids.map { |id| title_hash[id].dir }
+      examine_context["deleted_title_ids"].each do |title_id|
+        @title_hash.delete title_id
+      end
+
+      cache = examine_context["cached_contents_signature"]
+      library_paths
+        .select { |path| !(remained_title_dirs.includes? path) }
+        .select { |path| File.directory? path }
+        .map { |path| Title.new path, "", cache }
+        .select { |title| !(title.entries.empty? && title.titles.empty?) }
+        .sort! { |a, b| a.sort_title <=> b.sort_title }
+        .each do |title|
+          @title_hash[title.id] = title
+          @title_ids << title.id
+        end
+
+      @title_ids.uniq!
+      storage.bulk_insert_ids
+      Storage.default.mark_unavailable examine_context["deleted_entry_ids"],
+        examine_context["deleted_title_ids"]
+      deduped = Storage.default.dedupe_library_data
+      storage.close
+
+      ms = (Time.local - start).total_milliseconds
+      @last_scan_ms = ms
+      @last_scan_titles = @title_ids.size
+      @last_scan_deduped = deduped
+      Logger.info "Scanned #{@title_ids.size} titles in #{ms}ms. " \
+                  "Deduped #{deduped} DB rows"
+
+      spawn do
+        save_instance
+      end
+      true
+    ensure
+      @scanning = false
     end
   end
 
