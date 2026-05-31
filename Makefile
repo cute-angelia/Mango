@@ -4,7 +4,7 @@ INSTALL_DIR=$(PREFIX)/bin
 all: uglify | build
 
 uglify:
-	yarn
+	yarn install --frozen-lockfile
 	yarn uglify
 
 setup: libs
