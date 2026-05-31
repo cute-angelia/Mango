@@ -19,6 +19,7 @@ static: uglify | libs
 
 libs:
 	shards install --production
+	sed -i 's#https://raw.githubusercontent.com/nothings/stb/master/#https://raw.githubusercontent.com/nothings/stb/5736b15f7ea0ffb08dd38af21067c314d6a3aae9/#g' lib/image_size/ext/stbi/Makefile
 
 run:
 	crystal run src/mango.cr --error-trace
