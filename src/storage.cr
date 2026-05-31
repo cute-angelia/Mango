@@ -76,6 +76,20 @@ class Storage
     end
   end
 
+  private def get_queued_id(queue, path, signature)
+    row = queue.find do |tp|
+      queued_path = Path.new(tp[:path])
+        .relative_to(Config.current.library_path).to_s
+      queued_path == path && tp[:signature].to_s == signature.to_s
+    end
+    row ||= queue.find do |tp|
+      queued_path = Path.new(tp[:path])
+        .relative_to(Config.current.library_path).to_s
+      queued_path == path
+    end
+    row.try &.[:id]
+  end
+
   def username_exists(username)
     exists = false
     MainFiber.run do
@@ -227,6 +241,8 @@ class Storage
   def get_title_id(path, signature)
     id = nil
     path = Path.new(path).relative_to(Config.current.library_path).to_s
+    id = get_queued_id @@insert_title_ids, path, signature
+    return id if id
     MainFiber.run do
       get_db do |db|
         # First attempt to find the matching title in DB using BOTH path
@@ -277,6 +293,8 @@ class Storage
   def get_entry_id(path, signature)
     id = nil
     path = Path.new(path).relative_to(Config.current.library_path).to_s
+    id = get_queued_id @@insert_entry_ids, path, signature
+    return id if id
     MainFiber.run do
       get_db do |db|
         id = db.query_one? "select id from ids where path = (?) and " \
@@ -324,14 +342,14 @@ class Storage
           @@insert_title_ids.each do |tp|
             path = Path.new(tp[:path])
               .relative_to(Config.current.library_path).to_s
-            conn.exec "insert into titles (id, path, signature, " \
+            conn.exec "insert or ignore into titles (id, path, signature, " \
                       "unavailable) values (?, ?, ?, 0)",
               tp[:id], path, tp[:signature].to_s
           end
           @@insert_entry_ids.each do |tp|
             path = Path.new(tp[:path])
               .relative_to(Config.current.library_path).to_s
-            conn.exec "insert into ids (id, path, signature, " \
+            conn.exec "insert or ignore into ids (id, path, signature, " \
                       "unavailable) values (?, ?, ?, 0)",
               tp[:id], path, tp[:signature].to_s
           end
